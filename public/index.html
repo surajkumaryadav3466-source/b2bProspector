@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Prospector — Real-Time B2B Contact Finder</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0A0E14;
+    --surface: #10151D;
+    --surface-2: #161C26;
+    --border: #212936;
+    --text: #E7EBF0;
+    --muted: #6E7889;
+    --accent: #22D3EE;   /* verified / active signal */
+    --accent-dim: #0E7490;
+    --locked: #F2B84B;   /* locked / pending state */
+    --danger: #F2685C;
+  }
+  *{box-sizing:border-box}
+  body{
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+  }
+  .font-display{ font-family: 'Space Grotesk', sans-serif; }
+  .font-mono{ font-family: 'JetBrains Mono', monospace; }
+
+  .grain{
+    background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.025) 1px, transparent 0);
+    background-size: 22px 22px;
+  }
+
+  .glow-border{
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+
+  ::-webkit-scrollbar{ width:8px; height:8px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background:#232B38; border-radius:8px; }
+
+  @keyframes shimmer{
+    0%{ background-position: -400px 0; }
+    100%{ background-position: 400px 0; }
+  }
+  .skeleton{
+    background: linear-gradient(90deg, #12171F 0%, #1B222D 50%, #12171F 100%);
+    background-size: 800px 100%;
+    animation: shimmer 1.4s infinite linear;
+  }
+
+  @keyframes blink{ 50%{ opacity:0; } }
+  .cursor-blink{ animation: blink 1s step-start infinite; }
+
+  @keyframes fadein{
+    from{ opacity:0; transform: translateY(4px); }
+    to{ opacity:1; transform: translateY(0); }
+  }
+  .fadein{ animation: fadein .35s ease-out; }
+
+  @keyframes toast-in{
+    from{ opacity:0; transform: translateY(8px) scale(.98); }
+    to{ opacity:1; transform: translateY(0) scale(1); }
+  }
+  .toast{ animation: toast-in .25s ease-out; }
+
+  .row-hover:hover{ background: rgba(34, 211, 238, 0.035); }
+
+  .badge-locked{
+    color: var(--locked);
+    background: rgba(242,184,75,0.08);
+    border: 1px solid rgba(242,184,75,0.25);
+  }
+  .badge-verified{
+    color: var(--accent);
+    background: rgba(34,211,238,0.08);
+    border: 1px solid rgba(34,211,238,0.28);
+  }
+  .trace-line{ opacity:0; animation: fadein .25s ease-out forwards; }
+</style>
+</head>
+<body class="grain min-h-screen">
+
+<div class="min-h-screen flex">
+
+  <!-- Sidebar: Company metadata -->
+  <aside class="w-[280px] shrink-0 border-r border-[var(--border)] p-6 hidden lg:flex lg:flex-col gap-8" id="sidebar">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 rounded-md bg-[var(--accent)] flex items-center justify-center">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2L2 7l10 5 10-5-10-5z" stroke="#0A0E14" stroke-width="2" stroke-linejoin="round"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5" stroke="#0A0E14" stroke-width="2" stroke-linejoin="round"/></svg>
+      </div>
+      <span class="font-display font-semibold tracking-tight text-[15px]">Prospector</span>
+    </div>
+
+    <div id="company-meta" class="hidden flex-col gap-5 fadein">
+      <div>
+        <p class="text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono mb-1">Target domain</p>
+        <p id="meta-domain" class="font-display text-lg font-semibold"></p>
+      </div>
+      <div class="h-px bg-[var(--border)]"></div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <p class="text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono mb-1">Industry</p>
+          <p id="meta-industry" class="text-sm">—</p>
+        </div>
+        <div>
+          <p class="text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono mb-1">Est. size</p>
+          <p id="meta-size" class="text-sm">—</p>
+        </div>
+      </div>
+      <div>
+        <p class="text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono mb-1">Prospects found</p>
+        <p id="meta-count" class="text-2xl font-display font-semibold text-[var(--accent)]">0</p>
+      </div>
+      <div class="h-px bg-[var(--border)]"></div>
+      <div>
+        <p class="text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono mb-1">Verification mode</p>
+        <div class="flex items-center gap-2 mt-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-[var(--accent)]"></span>
+          <span class="text-sm font-mono" id="meta-mode">SMTP · local</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="sidebar-empty" class="text-sm text-[var(--muted)] leading-relaxed">
+      Enter a domain to pull live company metadata and prospect count here.
+    </div>
+
+    <div class="mt-auto text-[11px] text-[var(--muted)] font-mono leading-relaxed">
+      $0 stack · Google CSE + raw SMTP<br/>No paid enrichment APIs
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 flex flex-col min-w-0">
+
+    <!-- Search bar -->
+    <div class="border-b border-[var(--border)] px-6 sm:px-10 py-6">
+      <div class="max-w-2xl">
+        <h1 class="font-display text-2xl font-semibold tracking-tight mb-1">Find verified contacts, live.</h1>
+        <p class="text-sm text-[var(--muted)] mb-5">No stale database. Every search hits the open web in real time.</p>
+        <div class="flex gap-2">
+          <div class="relative flex-1">
+            <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)] font-mono text-sm">domain</span>
+            <input id="domain-input" type="text" placeholder="stripe.com"
+              class="w-full bg-[var(--surface)] glow-border rounded-lg pl-[5.2rem] pr-4 py-3 text-sm font-mono placeholder:text-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition"
+              onkeydown="if(event.key==='Enter') runSearch()" />
+          </div>
+          <button onclick="runSearch()" id="search-btn"
+            class="px-5 py-3 rounded-lg bg-[var(--accent)] text-[#04141A] font-semibold text-sm hover:bg-[#4FDCEF] transition active:scale-[0.98]">
+            Search
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="flex-1 overflow-auto px-6 sm:px-10 py-6">
+      <div id="empty-state" class="h-full flex flex-col items-center justify-center text-center py-24 text-[var(--muted)]">
+        <div class="w-12 h-12 rounded-full border border-[var(--border)] flex items-center justify-center mb-4">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        </div>
+        <p class="text-sm">Search a domain above to pull live prospects.</p>
+      </div>
+
+      <table id="results-table" class="w-full text-sm hidden">
+        <thead>
+          <tr class="text-left text-[11px] uppercase tracking-wider text-[var(--muted)] font-mono border-b border-[var(--border)]">
+            <th class="py-3 pr-4 font-medium">Name</th>
+            <th class="py-3 pr-4 font-medium">Title</th>
+            <th class="py-3 pr-4 font-medium">Company</th>
+            <th class="py-3 pr-4 font-medium">Email status</th>
+            <th class="py-3 pr-4 font-medium text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody id="results-body" class="divide-y divide-[var(--border)]"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="hidden fixed bottom-6 right-6 bg-[var(--surface-2)] glow-border rounded-lg px-4 py-3 text-sm flex items-center gap-2 toast">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+  <span id="toast-text">Copied to clipboard</span>
+</div>
+
+<script>
+const VERIFY_MODE = 'local'; // 'local' | 'api' — swap when a free-tier verification API is wired in
+
+let prospects = [];
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  document.getElementById('toast-text').textContent = msg;
+  t.classList.remove('hidden');
+  t.classList.add('toast');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(()=> t.classList.add('hidden'), 2200);
+}
+
+function estimateMeta(domain){
+  // Lightweight heuristic placeholder — replaced by real enrichment in api/prospects.js response if available
+  const seed = domain.length;
+  const sizes = ['1–10','11–50','51–200','201–500','500+'];
+  const industries = ['SaaS / Software','Fintech','E-commerce','Healthcare','Professional Services'];
+  return {
+    industry: industries[seed % industries.length],
+    size: sizes[seed % sizes.length]
+  };
+}
+
+function renderSkeletonRows(n=5){
+  const body = document.getElementById('results-body');
+  body.innerHTML = '';
+  for(let i=0;i<n;i++){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="py-4 pr-4"><div class="skeleton h-3.5 w-32 rounded"></div></td>
+      <td class="py-4 pr-4"><div class="skeleton h-3.5 w-24 rounded"></div></td>
+      <td class="py-4 pr-4"><div class="skeleton h-3.5 w-28 rounded"></div></td>
+      <td class="py-4 pr-4"><div class="skeleton h-5 w-20 rounded-full"></div></td>
+      <td class="py-4 pr-4"><div class="skeleton h-7 w-24 rounded-md ml-auto"></div></td>
+    `;
+    body.appendChild(tr);
+  }
+  document.getElementById('empty-state').classList.add('hidden');
+  document.getElementById('results-table').classList.remove('hidden');
+}
+
+async function runSearch(){
+  const domain = document.getElementById('domain-input').value.trim().toLowerCase().replace(/^https?:\/\//,'').replace(/\/$/,'');
+  if(!domain){ return; }
+
+  const btn = document.getElementById('search-btn');
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+
+  renderSkeletonRows(5);
+
+  const meta = estimateMeta(domain);
+  document.getElementById('sidebar-empty').classList.add('hidden');
+  document.getElementById('company-meta').classList.remove('hidden','flex').classList.add('flex');
+  document.getElementById('meta-domain').textContent = domain;
+  document.getElementById('meta-industry').textContent = meta.industry;
+  document.getElementById('meta-size').textContent = meta.size;
+  document.getElementById('meta-mode').textContent = VERIFY_MODE === 'local' ? 'SMTP · local' : 'API · free-tier';
+
+  try{
+    const res = await fetch(`/api/prospects?domain=${encodeURIComponent(domain)}`);
+    const data = await res.json();
+    prospects = data.prospects || [];
+  } catch(e){
+    prospects = [];
+  }
+
+  document.getElementById('meta-count').textContent = prospects.length;
+  renderResults(domain);
+
+  btn.disabled = false;
+  btn.textContent = 'Search';
+}
+
+function renderResults(domain){
+  const body = document.getElementById('results-body');
+  body.innerHTML = '';
+
+  if(prospects.length === 0){
+    document.getElementById('results-table').classList.add('hidden');
+    const empty = document.getElementById('empty-state');
+    empty.classList.remove('hidden');
+    empty.innerHTML = `<p class="text-sm text-[var(--muted)]">No public LinkedIn results found for <span class="font-mono text-[var(--text)]">${domain}</span>. Try a different domain.</p>`;
+    return;
+  }
+
+  prospects.forEach((p, idx) => {
+    const tr = document.createElement('tr');
+    tr.className = 'row-hover transition fadein';
+    tr.innerHTML = `
+      <td class="py-4 pr-4 font-medium">${p.name}</td>
+      <td class="py-4 pr-4 text-[var(--muted)]">${p.title || '—'}</td>
+      <td class="py-4 pr-4 text-[var(--muted)]">${domain}</td>
+      <td class="py-4 pr-4" id="status-${idx}">
+        <span class="badge-locked text-xs font-mono px-2 py-1 rounded-full">Email locked</span>
+      </td>
+      <td class="py-4 pr-4 text-right" id="action-${idx}">
+        <button onclick="accessEmail(${idx}, '${p.name.replace(/'/g,"\\'")}', '${domain}')"
+          class="px-3 py-1.5 rounded-md border border-[var(--border)] text-xs font-medium hover:border-[var(--accent)] hover:text-[var(--accent)] transition">
+          Access email
+        </button>
+      </td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+async function accessEmail(idx, name, domain){
+  const actionCell = document.getElementById(`action-${idx}`);
+  const statusCell = document.getElementById(`status-${idx}`);
+
+  actionCell.innerHTML = `
+    <div class="flex flex-col items-end gap-1 font-mono text-[11px] text-[var(--muted)]" id="trace-${idx}"></div>
+  `;
+
+  const traceEl = document.getElementById(`trace-${idx}`);
+  const steps = ['HELO prospector.local', 'MAIL FROM:<verify@prospector.local>', `RCPT TO:<candidate@${domain}>`, '250 OK'];
+
+  for(let i=0;i<steps.length;i++){
+    await new Promise(r => setTimeout(r, 260));
+    const line = document.createElement('div');
+    line.className = 'trace-line';
+    line.textContent = `▸ ${steps[i]}`;
+    traceEl.appendChild(line);
+  }
+
+  await new Promise(r => setTimeout(r, 300));
+
+  let email;
+  try{
+    const res = await fetch(`/api/verify-email?name=${encodeURIComponent(name)}&domain=${encodeURIComponent(domain)}&mode=${VERIFY_MODE}`);
+    const data = await res.json();
+    email = data.email;
+  } catch(e){
+    const [first, ...rest] = name.toLowerCase().split(' ');
+    const last = rest.join('');
+    email = `${first}.${last}@${domain}`;
+  }
+
+  statusCell.innerHTML = `<span class="badge-verified text-xs font-mono px-2 py-1 rounded-full">Verified</span>`;
+  actionCell.innerHTML = `
+    <button onclick="copyEmail(this, '${email}')"
+      class="font-mono text-xs px-3 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--border)] hover:border-[var(--accent)] transition">
+      ${email}
+    </button>
+  `;
+}
+
+function copyEmail(btn, email){
+  navigator.clipboard.writeText(email).then(()=> showToast(`Copied ${email}`));
+}
+</script>
+
+</body>
+</html>

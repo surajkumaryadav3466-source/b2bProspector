@@ -1,0 +1,10 @@
+{
+  "name": "prospect-finder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-time B2B prospect finder & email verifier — $0 stack (Google CSE + raw SMTP handshake).",
+  "scripts": {
+  "dev": "node api/prospects.js"
+},
+  "dependencies": {}
+}
