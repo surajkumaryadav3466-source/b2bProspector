@@ -1,15 +1,23 @@
 /**
  * GET /api/prospects?domain=example.com
  *
- * Queries the Google Custom Search JSON API for public LinkedIn profile pages
+ * Queries the Serper.dev Google Search API for public LinkedIn profile pages
  * mentioning the target domain, then parses the result titles into
  * { name, title, linkedinUrl } objects.
  *
- * Requires env vars: GOOGLE_API_KEY, GOOGLE_CX
- * Free tier: 100 queries/day. This endpoint uses exactly 1 query per call.
+ * Requires env var: SERPER_API_KEY
+ * Free tier: 2,500 searches total (one-time, not monthly). This endpoint uses
+ * exactly 1 search per call. See README.md for signup steps.
+ *
+ * NOTE: this replaces the original Google Custom Search JSON API integration —
+ * that API is now closed to new Google Cloud projects/customers (confirmed via
+ * Google's own docs as of 2026), so it no longer works for newly created keys.
+ * Serper still queries live Google results under the hood, so the same
+ * site:linkedin.com/in/ query pattern and result-title parsing below work
+ * unchanged — only the request/auth layer is different.
  */
 
-const GOOGLE_SEARCH_ENDPOINT = 'https://www.googleapis.com/customsearch/v1';
+const SERPER_SEARCH_ENDPOINT = 'https://google.serper.dev/search';
 
 /**
  * Google result titles for LinkedIn profiles are typically formatted as one of:
@@ -70,35 +78,37 @@ module.exports = async (req, res) => {
     return res.end(JSON.stringify({ error: 'Missing required query parameter: domain' }));
   }
 
-  const apiKey = process.env.GOOGLE_API_KEY;
-  const cx = process.env.GOOGLE_CX;
+  const apiKey = process.env.SERPER_API_KEY;
 
-  if (!apiKey || !cx) {
+  if (!apiKey) {
     res.statusCode = 500;
     return res.end(JSON.stringify({
-      error: 'Server is missing GOOGLE_API_KEY / GOOGLE_CX environment variables. See README.md setup steps.'
+      error: 'Server is missing the SERPER_API_KEY environment variable. See README.md setup steps.'
     }));
   }
 
   const searchQuery = `site:linkedin.com/in/ "at ${domain}"`;
 
-  const url = new URL(GOOGLE_SEARCH_ENDPOINT);
-  url.searchParams.set('key', apiKey);
-  url.searchParams.set('cx', cx);
-  url.searchParams.set('q', searchQuery);
-  url.searchParams.set('num', '10'); // max allowed per request by the API
-
   try {
-    const googleRes = await fetch(url.toString());
-    const data = await googleRes.json();
+    const serperRes = await fetch(SERPER_SEARCH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ q: searchQuery, num: 10 })
+    });
 
-    if (!googleRes.ok) {
-      const message = data?.error?.message || 'Google Custom Search API request failed.';
-      res.statusCode = googleRes.status;
+    const data = await serperRes.json();
+
+    if (!serperRes.ok) {
+      const message = data?.message || data?.error || 'Serper API request failed.';
+      res.statusCode = serperRes.status;
       return res.end(JSON.stringify({ error: message }));
     }
 
-    const items = Array.isArray(data.items) ? data.items : [];
+    // Serper's response shape: { organic: [ { title, link, snippet, position }, ... ] }
+    const items = Array.isArray(data.organic) ? data.organic : [];
 
     const prospects = items
       .map(item => {
@@ -112,7 +122,7 @@ module.exports = async (req, res) => {
         };
       })
       .filter(Boolean)
-      // De-duplicate by name in case Google returns near-identical listings.
+      // De-duplicate by name in case results contain near-identical listings.
       .filter((p, idx, arr) => arr.findIndex(x => x.name === p.name) === idx);
 
     res.statusCode = 200;
@@ -120,6 +130,6 @@ module.exports = async (req, res) => {
 
   } catch (err) {
     res.statusCode = 502;
-    return res.end(JSON.stringify({ error: 'Failed to reach Google Custom Search API.', detail: err.message }));
+    return res.end(JSON.stringify({ error: 'Failed to reach Serper API.', detail: err.message }));
   }
 };
