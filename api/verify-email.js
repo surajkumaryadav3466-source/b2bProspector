@@ -6,8 +6,8 @@
  *      mode=smtp -> raw MX lookup + HELO/MAIL FROM/RCPT TO handshake (free, no external API,
  *                   but requires outbound port 25 to be open — works locally, generally
  *                   BLOCKED on Vercel/AWS Lambda by default)
- *      mode=api  -> placeholder for a free-tier third-party verification API
- *                   (fill in VERIFY_API_URL / VERIFY_API_KEY in .env)
+ *      mode=api  -> Reoon Email Verifier (free tier: 600/month, recurring)
+ *                   (fill in VERIFY_API_KEY in .env — no VERIFY_API_URL needed)
  * 3. Returns the first pattern that verifies as deliverable, or a best-guess fallback.
  *
  * Response shape: { email, verified, checkedPatterns, mode }
@@ -183,30 +183,54 @@ async function verifyViaSmtp(domain, candidates) {
 // 2b. Third-party free-tier API verification (placeholder)
 // ---------------------------------------------------------------------------
 
+const REOON_ENDPOINT = 'https://emailverifier.reoon.com/api/v1/verify';
+
+/**
+ * Reoon Email Verifier — https://www.reoon.com/email-verifier/
+ * Free tier: 600 verifications/month (100 instant credits + up to ~500/day via
+ * daily-renewing credits, no card required). Recurring monthly, not one-time.
+ *
+ * "power" mode does a full SMTP mailbox check (slower, ~1-60s per email but far
+ * more accurate); "quick" mode skips the live mailbox check (sub-second, less
+ * accurate). We use "power" here since accuracy matters more than speed for a
+ * one-off "Access email" click.
+ *
+ * Docs: https://www.reoon.com/articles/api-documentation-of-reoon-email-verifier/
+ */
 async function verifyViaApi(domain, candidates) {
-  const apiUrl = process.env.VERIFY_API_URL;
   const apiKey = process.env.VERIFY_API_KEY;
 
-  if (!apiUrl || !apiKey) {
+  if (!apiKey) {
     return {
       verifiedEmail: null,
-      error: 'VERIFY_API_URL / VERIFY_API_KEY not configured. Add a free-tier verification provider to .env to use mode=api.'
+      error: 'VERIFY_API_KEY not configured. Add your Reoon API key to .env / Vercel env vars to use mode=api.'
     };
   }
 
-  // ---- Plug in your chosen provider's request/response shape here. ----
-  // Example skeleton (adjust query params / auth header / response field names
-  // to match whichever free-tier verifier you pick):
-  //
-  // for (const candidate of candidates) {
-  //   const res = await fetch(`${apiUrl}?email=${encodeURIComponent(candidate)}&api_key=${apiKey}`);
-  //   const data = await res.json();
-  //   if (data.result === 'deliverable' || data.status === 'valid') {
-  //     return { verifiedEmail: candidate, error: null };
-  //   }
-  // }
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(REOON_ENDPOINT);
+      url.searchParams.set('email', candidate);
+      url.searchParams.set('key', apiKey);
+      url.searchParams.set('mode', 'power');
 
-  return { verifiedEmail: null, error: 'API verification provider not yet wired in — see placeholder in verify-email.js.' };
+      const res = await fetch(url.toString());
+      const data = await res.json();
+
+      // Reoon statuses: "safe", "invalid", "disabled", "disposable", "inbox_full",
+      // "catch_all", "role_account", "spamtrap", "unknown"
+      // "safe" (or is_safe_to_send: true) is the only status we treat as verified.
+      if (data.is_safe_to_send === true || data.status === 'safe') {
+        return { verifiedEmail: candidate, error: null };
+      }
+      // Anything else (invalid, unknown, catch_all, etc.) — try the next pattern.
+    } catch (err) {
+      // Network/API error on this candidate — move on rather than failing the whole request.
+      continue;
+    }
+  }
+
+  return { verifiedEmail: null, error: null };
 }
 
 // ---------------------------------------------------------------------------
