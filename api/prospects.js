@@ -75,14 +75,21 @@ function extractLinkedInUrl(item) {
  * domain string alone works by coincidence for brand-name-matches-domain companies
  * (Stripe/stripe.com) but silently returns nothing for most real businesses.
  *
- * This fetches the domain's own homepage and extracts a likely company name from
- * its <title> or og:site_name tag, so we can search LinkedIn for the name people
- * actually use, not the domain string.
+ * This fetches the domain's own homepage and extracts likely company name
+ * candidates from its <title> and og:site_name tag. Different sites order their
+ * title tag differently ("Brand | Tagline" vs "Tagline | Brand"), so this returns
+ * BOTH the first and last segment as candidates rather than guessing one.
+ *
+ * Also attempts to extract a city/region from the page (via JSON-LD address
+ * schema or a "City, ST" text pattern), which helps disambiguate multi-location
+ * franchise businesses (e.g. "Mr. Rooter Plumbing" has hundreds of independently
+ * owned regional franchises — searching the brand name alone mixes all of them
+ * together with no way to tell which one the target domain actually is).
  */
-async function resolveCompanyName(domain) {
-  const candidates = [`https://${domain}`, `https://www.${domain}`];
+async function resolveCompanyInfo(domain) {
+  const candidateUrls = [`https://${domain}`, `https://www.${domain}`];
 
-  for (const url of candidates) {
+  for (const url of candidateUrls) {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
@@ -92,26 +99,39 @@ async function resolveCompanyName(domain) {
 
       const html = await res.text();
 
-      // Prefer og:site_name (usually the clean brand name), fall back to <title>.
       const ogMatch = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i);
       const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-
-      let raw = ogMatch?.[1] || titleMatch?.[1];
+      const raw = ogMatch?.[1] || titleMatch?.[1];
       if (!raw) continue;
 
-      // Strip common trailing suffixes like "| Home", "- Official Site", "| Plumbing Services".
-      const cleaned = raw
-        .split(/\s*[\|\-–]\s*/)[0]
-        .replace(/&amp;/g, '&')
-        .trim();
+      const clean = s => s.replace(/&amp;/g, '&').trim();
+      const segments = raw.split(/\s*[\|\-–]\s*/).map(clean).filter(s => s.length >= 2 && s.length < 80);
 
-      if (cleaned.length >= 2 && cleaned.length < 80) return cleaned;
+      // og:site_name is usually already clean and unambiguous — trust it alone if present.
+      // Otherwise offer both the first and last title segment as candidates, since brand
+      // name placement varies by site ("Brand | Tagline" vs "Tagline | Brand").
+      const nameCandidates = ogMatch
+        ? [clean(ogMatch[1])]
+        : [...new Set([segments[0], segments[segments.length - 1]])].filter(Boolean);
+
+      // Try to find a city/region for franchise disambiguation.
+      let city = null;
+      const jsonLdMatch = html.match(/"addressLocality"\s*:\s*"([^"]+)"/i);
+      if (jsonLdMatch) {
+        city = clean(jsonLdMatch[1]);
+      } else {
+        // Fallback: look for a "City, ST" pattern (common in footers/contact sections).
+        const cityStateMatch = html.match(/\b([A-Z][a-zA-Z.\s]{2,25}),\s*([A-Z]{2})\b/);
+        if (cityStateMatch) city = cityStateMatch[1].trim();
+      }
+
+      return { nameCandidates, city };
     } catch (err) {
-      continue; // try next candidate URL, or fall through to domain-only search
+      continue; // try next candidate URL
     }
   }
 
-  return null;
+  return { nameCandidates: [], city: null };
 }
 
 async function searchLinkedIn(apiKey, query) {
@@ -153,16 +173,32 @@ module.exports = async (req, res) => {
 
   try {
     let items = await searchLinkedIn(apiKey, searchQuery);
+    let resolvedCompanyName = null;
+    let resolvedCity = null;
 
-    // If the domain-based query came up empty, try again using the company's
-    // actual name (resolved from its homepage) — this is what most real LinkedIn
-    // profiles will actually contain, unlike the raw domain string.
-    let companyName = null;
     if (items.length === 0) {
-      companyName = await resolveCompanyName(domain);
-      if (companyName) {
-        const nameQuery = `site:linkedin.com/in/ "at ${companyName}"`;
+      const { nameCandidates, city } = await resolveCompanyInfo(domain);
+      resolvedCity = city;
+
+      for (const candidateName of nameCandidates) {
+        // If we found a city (helps disambiguate franchises like "Mr. Rooter
+        // Plumbing", which has hundreds of independently-owned local branches),
+        // try the tighter name+city query first, then fall back to name-only.
+        if (city) {
+          const tightQuery = `site:linkedin.com/in/ "at ${candidateName}" "${city}"`;
+          items = await searchLinkedIn(apiKey, tightQuery);
+          if (items.length > 0) {
+            resolvedCompanyName = candidateName;
+            break;
+          }
+        }
+
+        const nameQuery = `site:linkedin.com/in/ "at ${candidateName}"`;
         items = await searchLinkedIn(apiKey, nameQuery);
+        if (items.length > 0) {
+          resolvedCompanyName = candidateName;
+          break;
+        }
       }
     }
 
@@ -182,7 +218,11 @@ module.exports = async (req, res) => {
       .filter((p, idx, arr) => arr.findIndex(x => x.name === p.name) === idx);
 
     res.statusCode = 200;
-    return res.end(JSON.stringify({ prospects, resolvedCompanyName: companyName || undefined }));
+    return res.end(JSON.stringify({
+      prospects,
+      resolvedCompanyName: resolvedCompanyName || undefined,
+      resolvedCity: resolvedCity || undefined
+    }));
 
   } catch (err) {
     res.statusCode = 502;
