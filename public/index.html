@@ -79,6 +79,11 @@
     background: rgba(34,211,238,0.08);
     border: 1px solid rgba(34,211,238,0.28);
   }
+  .badge-unverified{
+    color: var(--muted);
+    background: rgba(110,120,137,0.08);
+    border: 1px solid rgba(110,120,137,0.25);
+  }
   .trace-line{ opacity:0; animation: fadein .25s ease-out forwards; }
 </style>
 </head>
@@ -327,24 +332,42 @@ async function accessEmail(idx, name, domain){
 
   await new Promise(r => setTimeout(r, 300));
 
-  let email;
+  let email = null;
+  let verified = false;
+  let errorMsg = null;
+
   try{
     const res = await fetch(`/api/verify-email?name=${encodeURIComponent(name)}&domain=${encodeURIComponent(domain)}&mode=${VERIFY_MODE}`);
     const data = await res.json();
+    if(!res.ok){
+      throw new Error(data.error || `Request failed with status ${res.status}`);
+    }
     email = data.email;
+    verified = Boolean(data.verified);
   } catch(e){
-    const [first, ...rest] = name.toLowerCase().split(' ');
-    const last = rest.join('');
-    email = `${first}.${last}@${domain}`;
+    console.error('Email verification failed:', e);
+    errorMsg = e.message;
   }
 
-  statusCell.innerHTML = `<span class="badge-verified text-xs font-mono px-2 py-1 rounded-full">Verified</span>`;
-  actionCell.innerHTML = `
-    <button data-action="copy-email" data-email="${email}"
-      class="font-mono text-xs px-3 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--border)] hover:border-[var(--accent)] transition">
-      ${email}
-    </button>
-  `;
+  if(email && verified){
+    statusCell.innerHTML = `<span class="badge-verified text-xs font-mono px-2 py-1 rounded-full">Verified</span>`;
+    actionCell.innerHTML = `
+      <button data-action="copy-email" data-email="${email}"
+        class="font-mono text-xs px-3 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--border)] hover:border-[var(--accent)] transition">
+        ${email}
+      </button>
+    `;
+  } else {
+    // No confirmed email — never show a guessed address as if it were real.
+    // Showing an unconfirmed pattern as a copyable "result" risks the user
+    // emailing an address that doesn't exist.
+    statusCell.innerHTML = `<span class="badge-unverified text-xs font-mono px-2 py-1 rounded-full">Not confirmed</span>`;
+    actionCell.innerHTML = `
+      <span class="font-mono text-[11px] text-[var(--muted)]" title="${errorMsg ? errorMsg.replace(/"/g,'&quot;') : 'No pattern could be confirmed as deliverable'}">
+        No verified email found
+      </span>
+    `;
+  }
 }
 
 function copyEmail(btn, email){
