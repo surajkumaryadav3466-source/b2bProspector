@@ -262,15 +262,25 @@ module.exports = async (req, res) => {
     result = await verifyViaSmtp(domain, candidates);
   }
 
-  const email = result.verifiedEmail || candidates[0]; // fall back to best-guess pattern if nothing verified
-  const verified = Boolean(result.verifiedEmail);
+  // Only ever return an email that was actually confirmed deliverable — never
+  // fall back to a best-guess pattern. Returning unconfirmed guesses as if they
+  // were real risks bouncing real outreach emails and damaging sender reputation.
+  if (result.verifiedEmail) {
+    res.statusCode = 200;
+    return res.end(JSON.stringify({
+      email: result.verifiedEmail,
+      verified: true,
+      checkedPatterns: candidates,
+      mode
+    }));
+  }
 
   res.statusCode = 200;
   return res.end(JSON.stringify({
-    email,
-    verified,
+    email: null,
+    verified: false,
     checkedPatterns: candidates,
     mode,
-    note: result.error || undefined
+    note: result.error || 'None of the generated patterns could be confirmed as deliverable.'
   }));
 };
