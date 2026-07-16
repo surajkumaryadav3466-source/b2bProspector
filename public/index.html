@@ -146,18 +146,16 @@
           <div class="relative flex-1">
             <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)] font-mono text-sm">domain</span>
             <input id="domain-input" type="text" placeholder="stripe.com"
-              class="w-full bg-[var(--surface)] glow-border rounded-lg pl-[5.2rem] pr-4 py-3 text-sm font-mono placeholder:text-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition"
-              onkeydown="if(event.key==='Enter') runSearch()" />
+              class="w-full bg-[var(--surface)] glow-border rounded-lg pl-[5.2rem] pr-4 py-3 text-sm font-mono placeholder:text-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition" />
           </div>
-          <button onclick="runSearch()" id="search-btn"
+          <button id="search-btn"
             class="px-5 py-3 rounded-lg bg-[var(--accent)] text-[#04141A] font-semibold text-sm hover:bg-[#4FDCEF] transition active:scale-[0.98]">
             Search
           </button>
         </div>
+        <p id="search-error" class="hidden mt-3 text-sm text-[var(--danger)] font-mono"></p>
       </div>
     </div>
-
-    <!-- Table -->
     <div class="flex-1 overflow-auto px-6 sm:px-10 py-6">
       <div id="empty-state" class="h-full flex flex-col items-center justify-center text-center py-24 text-[var(--muted)]">
         <div class="w-12 h-12 rounded-full border border-[var(--border)] flex items-center justify-center mb-4">
@@ -189,7 +187,7 @@
 </div>
 
 <script>
-const VERIFY_MODE = 'local'; // 'local' | 'api' — swap when a free-tier verification API is wired in
+const VERIFY_MODE = 'api'; // 'local' (raw SMTP) | 'api' (Reoon) — 'api' is what's wired up and tested
 
 let prospects = [];
 
@@ -249,12 +247,22 @@ async function runSearch(){
   document.getElementById('meta-size').textContent = meta.size;
   document.getElementById('meta-mode').textContent = VERIFY_MODE === 'local' ? 'SMTP · local' : 'API · free-tier';
 
+  const errorEl = document.getElementById('search-error');
+  errorEl.classList.add('hidden');
+  errorEl.textContent = '';
+
   try{
     const res = await fetch(`/api/prospects?domain=${encodeURIComponent(domain)}`);
     const data = await res.json();
+    if(!res.ok){
+      throw new Error(data.error || `Request failed with status ${res.status}`);
+    }
     prospects = data.prospects || [];
   } catch(e){
+    console.error('Prospect search failed:', e);
     prospects = [];
+    errorEl.textContent = `Search failed: ${e.message}`;
+    errorEl.classList.remove('hidden');
   }
 
   document.getElementById('meta-count').textContent = prospects.length;
@@ -287,7 +295,7 @@ function renderResults(domain){
         <span class="badge-locked text-xs font-mono px-2 py-1 rounded-full">Email locked</span>
       </td>
       <td class="py-4 pr-4 text-right" id="action-${idx}">
-        <button onclick="accessEmail(${idx}, '${p.name.replace(/'/g,"\\'")}', '${domain}')"
+        <button data-action="access-email" data-idx="${idx}" data-name="${p.name.replace(/"/g,'&quot;')}" data-domain="${domain}"
           class="px-3 py-1.5 rounded-md border border-[var(--border)] text-xs font-medium hover:border-[var(--accent)] hover:text-[var(--accent)] transition">
           Access email
         </button>
@@ -331,7 +339,7 @@ async function accessEmail(idx, name, domain){
 
   statusCell.innerHTML = `<span class="badge-verified text-xs font-mono px-2 py-1 rounded-full">Verified</span>`;
   actionCell.innerHTML = `
-    <button onclick="copyEmail(this, '${email}')"
+    <button data-action="copy-email" data-email="${email}"
       class="font-mono text-xs px-3 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--border)] hover:border-[var(--accent)] transition">
       ${email}
     </button>
@@ -341,6 +349,27 @@ async function accessEmail(idx, name, domain){
 function copyEmail(btn, email){
   navigator.clipboard.writeText(email).then(()=> showToast(`Copied ${email}`));
 }
+
+// Event delegation — avoids inline onclick attributes, which some strict
+// browser extensions / CSPs silently block, causing clicks to appear to do
+// nothing with no visible error.
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('search-btn').addEventListener('click', runSearch);
+  document.getElementById('domain-input').addEventListener('keydown', (e) => {
+    if(e.key === 'Enter') runSearch();
+  });
+
+  document.getElementById('results-body').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if(!btn) return;
+
+    if(btn.dataset.action === 'access-email'){
+      accessEmail(Number(btn.dataset.idx), btn.dataset.name, btn.dataset.domain);
+    } else if(btn.dataset.action === 'copy-email'){
+      copyEmail(btn, btn.dataset.email);
+    }
+  });
+});
 </script>
 
 </body>
