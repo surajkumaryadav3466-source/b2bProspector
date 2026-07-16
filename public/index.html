@@ -241,7 +241,8 @@ async function runSearch(){
 
   const meta = estimateMeta(domain);
   document.getElementById('sidebar-empty').classList.add('hidden');
-  document.getElementById('company-meta').classList.remove('hidden','flex').classList.add('flex');
+  document.getElementById('company-meta').classList.remove('hidden');
+  document.getElementById('company-meta').classList.add('flex');
   document.getElementById('meta-domain').textContent = domain;
   document.getElementById('meta-industry').textContent = meta.industry;
   document.getElementById('meta-size').textContent = meta.size;
