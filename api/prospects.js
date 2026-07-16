@@ -69,6 +69,68 @@ function extractLinkedInUrl(item) {
   return null;
 }
 
+/**
+ * People almost never write a company's raw domain ("mrrooter.com") on LinkedIn —
+ * they write the company's actual name ("Mr. Rooter Plumbing"). Searching for the
+ * domain string alone works by coincidence for brand-name-matches-domain companies
+ * (Stripe/stripe.com) but silently returns nothing for most real businesses.
+ *
+ * This fetches the domain's own homepage and extracts a likely company name from
+ * its <title> or og:site_name tag, so we can search LinkedIn for the name people
+ * actually use, not the domain string.
+ */
+async function resolveCompanyName(domain) {
+  const candidates = [`https://${domain}`, `https://www.${domain}`];
+
+  for (const url of candidates) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+
+      const html = await res.text();
+
+      // Prefer og:site_name (usually the clean brand name), fall back to <title>.
+      const ogMatch = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i);
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+
+      let raw = ogMatch?.[1] || titleMatch?.[1];
+      if (!raw) continue;
+
+      // Strip common trailing suffixes like "| Home", "- Official Site", "| Plumbing Services".
+      const cleaned = raw
+        .split(/\s*[\|\-–]\s*/)[0]
+        .replace(/&amp;/g, '&')
+        .trim();
+
+      if (cleaned.length >= 2 && cleaned.length < 80) return cleaned;
+    } catch (err) {
+      continue; // try next candidate URL, or fall through to domain-only search
+    }
+  }
+
+  return null;
+}
+
+async function searchLinkedIn(apiKey, query) {
+  const res = await fetch(SERPER_SEARCH_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'X-API-KEY': apiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ q: query, num: 10 })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const message = data?.message || data?.error || 'Serper API request failed.';
+    throw new Error(message);
+  }
+  return Array.isArray(data.organic) ? data.organic : [];
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
@@ -90,25 +152,19 @@ module.exports = async (req, res) => {
   const searchQuery = `site:linkedin.com/in/ "at ${domain}"`;
 
   try {
-    const serperRes = await fetch(SERPER_SEARCH_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'X-API-KEY': apiKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ q: searchQuery, num: 10 })
-    });
+    let items = await searchLinkedIn(apiKey, searchQuery);
 
-    const data = await serperRes.json();
-
-    if (!serperRes.ok) {
-      const message = data?.message || data?.error || 'Serper API request failed.';
-      res.statusCode = serperRes.status;
-      return res.end(JSON.stringify({ error: message }));
+    // If the domain-based query came up empty, try again using the company's
+    // actual name (resolved from its homepage) — this is what most real LinkedIn
+    // profiles will actually contain, unlike the raw domain string.
+    let companyName = null;
+    if (items.length === 0) {
+      companyName = await resolveCompanyName(domain);
+      if (companyName) {
+        const nameQuery = `site:linkedin.com/in/ "at ${companyName}"`;
+        items = await searchLinkedIn(apiKey, nameQuery);
+      }
     }
-
-    // Serper's response shape: { organic: [ { title, link, snippet, position }, ... ] }
-    const items = Array.isArray(data.organic) ? data.organic : [];
 
     const prospects = items
       .map(item => {
@@ -126,7 +182,7 @@ module.exports = async (req, res) => {
       .filter((p, idx, arr) => arr.findIndex(x => x.name === p.name) === idx);
 
     res.statusCode = 200;
-    return res.end(JSON.stringify({ prospects }));
+    return res.end(JSON.stringify({ prospects, resolvedCompanyName: companyName || undefined }));
 
   } catch (err) {
     res.statusCode = 502;
